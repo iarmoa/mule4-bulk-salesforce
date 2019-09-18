@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:salesforce="http://www.mulesoft.org/schema/mule/salesforce" xmlns:batch="http://www.mulesoft.org/schema/mule/batch"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:file="http://www.mulesoft.org/schema/mule/file" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/batch http://www.mulesoft.org/schema/mule/batch/current/mule-batch.xsd
+http://www.mulesoft.org/schema/mule/salesforce http://www.mulesoft.org/schema/mule/salesforce/current/mule-salesforce.xsd">
+	<flow name="mainFlow" doc:id="e63d687d-4cfb-4563-bd02-e6ccec6c139c" >
+		<logger level="INFO" doc:name="Initial message" doc:id="de220339-e36f-433a-836d-a83d1cc2e1a3" message="Starting process"/>
+		<flow-ref doc:name="Get Records" doc:id="1638f9a4-1cfa-412e-a7f8-b44b83a6b4b3" name="getDataBaseDataFlow"/>
+		<batch:job jobName="upsertBatchJob" doc:id="77ee88fe-dad2-4d46-ae95-e6b0cd239abf" >
+			<batch:process-records >
+				<batch:step name="SalesForceUpsert" doc:id="14fab47c-72cc-43e1-a84d-266386aef95e" >
+					<flow-ref doc:name="SalesForce Upsert" doc:id="006934be-0314-498f-b832-4311a618cf43" name="upsertSalesForceFlow"/>
+				</batch:step>
+				<batch:step name="LogReport" doc:id="48b777b0-0e60-46fb-9dbb-936435c577cc" doc:description="You can use this step to filter all the records with error and process them with the data
+">
+					<batch:aggregator doc:name="Batch Aggregator" doc:id="6381ec5a-0263-45e2-9231-d8677a8b1a78" size="40000" doc:description="Batch aggregator will trigger every 40000 records. Modify that parameter if you want to">
+						<flow-ref doc:name="Get Errors" doc:id="43f9b464-cf74-4b09-b3c1-ac207516c240" name="getErrorsFlow"/>
+						<logger level="INFO" doc:name="Logg errors" doc:id="aaa05ef1-db15-40f3-a0a9-5df8e1c1facb" message="#[payload]" doc:description="You can trait all the errors sending an email o just saving the payload into a file."/>
+					</batch:aggregator>
+				</batch:step>
+			</batch:process-records>
+			<batch:on-complete >
+				<logger level="INFO" doc:name="Final Flow Logger" doc:id="43131557-a6f9-447d-a33d-6d21238fd2ca" message="The flow has finishied. Wait until the process end"/>
+			</batch:on-complete>
+		</batch:job>
+	</flow>
+	<sub-flow name="getDataBaseDataFlow" doc:id="e54e2384-53bc-4c6c-8fae-2b11b9ab4e4a" >
+		<logger level="INFO" doc:name="Get Message" doc:id="c160cf91-27cd-495d-a1b5-5ddbcf389bfe" message="Getting database records"/>
+		<db:select doc:name="Select Contacts" doc:id="2a5a7261-365f-421e-b7e6-e9ef7ea0185d" doc:description="You can set a watermark and add a conditon with a watermark input parameter" config-ref="Database_Config">
+			<db:sql >SELECT document_id, type, name, last_name, email, phone_number FROM contacts</db:sql>
+		</db:select>
+		<set-variable value="1000" doc:name="Batch Block Size" doc:id="ef7e666c-3970-48fe-aba5-f339979a6c3a" variableName="batchLimit"/>
+		<ee:transform doc:name="Transform Message" doc:id="403cd4b0-7a81-49f2-b8f2-174de2a941bb" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/java
+import * from dw::core::Arrays
+---
+payload map ({
+	Name: $.name ++ ' ' ++ $.last_name,
+	User_Id__c: $.document_id,
+	Title: $."type",
+	Phone: $.phone_number,
+	Email: $.email
+	//We define a batch limit to process all the data in blocks. If there's not a limit by default 1000
+}) divideBy (vars.batchLimit as Number default 1000)]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<set-variable value="#[payload]" doc:name="Records to Upsert" doc:id="776df763-9d08-4f29-b361-cc136a24d660" variableName="recordsToInsert" />
+	</sub-flow>
+	<sub-flow name="upsertSalesForceFlow" doc:id="0672f772-eeb8-4892-939a-d9b9248f246a" >
+		<logger level="INFO" doc:name="Upsert Message" doc:id="91a8fb69-5d2f-4569-b852-e5d80f02e4a3" message="Upserting in salesforce"/>
+		<salesforce:update-bulk doc:name="Update bulk" doc:id="c568945a-f88d-4c7e-be55-5dd34ceefcd6" config-ref="Salesforce_Config" type="Contact"/>
+		<ee:transform doc:name="Transform Message" doc:id="a2e82d70-4b03-4a26-8dfe-5ba155c8be5e" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/java
+import * from dw::Runtime
+---
+payload wait 40000]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<until-successful maxRetries="5" doc:name="Until Successful" doc:id="27de4edb-bab4-4f58-85cb-2f358890793d" doc:description="Itarate until get a successful message">
+			<salesforce:bulk-result doc:name="Get Bulk result" doc:id="53c1d26c-c8d0-4617-86c0-25fcbd2b81e6" config-ref="Salesforce_Config"/>
+		</until-successful>
+		<set-payload value="#[payload]" doc:name="Set Payload" doc:id="09e37cfb-a5b1-40be-99dc-baf3f637459f" />
+	</sub-flow>
+	<sub-flow name="getErrorsFlow" doc:id="c2b4cd90-b1a4-47a1-9940-6c1c0e2ead6a" >
+		<logger level="INFO" doc:name="Error logger" doc:id="49f8fe3b-aa23-46a8-a855-c6ad024befb0" message="Getting records with errors" />
+		<set-variable value="#[[]]" doc:name="Set Records Result" doc:id="af5e8859-28bb-4c0e-942a-e7e265bed36c" variableName="bulkResult" />
+		<foreach doc:name="For Each" doc:id="778d6f80-3f1e-47fb-b2e4-3f33214d24cb" collection="payload" >
+			<set-variable value="#[vars.bulkResult ++ payload.items[0].payload.result]" doc:name="Append Result" doc:id="f27ba8c3-5929-4fd8-b0d7-cecdaa82b629" variableName="bulkResult" />
+		</foreach>
+		<set-variable value="#[sizeOf(vars.bulkResult)]" doc:name="Set Total Records" doc:id="91a03350-4cc5-4fc3-aa57-4b9282b6a693" variableName="totalRecords" />
+		<set-payload value="#[vars.bulkResult]" doc:name="Set Payload" doc:id="406d0d3b-e2a3-49a7-ac85-8a55139df624" />
+		<ee:transform doc:name="Transform Message" doc:id="f7af1ce8-cbaf-4c37-bb04-337569d9cbf2" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/java
+---
+payload filter ($.success == false) map({
+	error: $.errors[0].message,
+	record: vars.recordsToInsert[floor($$/vars.batchLimit as Number)][mod($$, vars.batchLimit  as Number)]
+})]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+	</sub-flow>
+</mule>
